@@ -10,10 +10,24 @@ const fileChip = document.querySelector("#file-chip");
 const dropzone = document.querySelector("#dropzone");
 
 
-function getChatEndpoint() {
+function getChatEndpoints() {
   const { hostname, port } = window.location;
-  const isLocalPythonServer = hostname === "127.0.0.1" && port === "8000";
-  return isLocalPythonServer ? "/api/chat" : "/.netlify/functions/chat";
+  const endpoints = [];
+  const isLocalHost =
+    hostname === "127.0.0.1" || hostname === "localhost";
+
+  if (isLocalHost && port === "8000") {
+    endpoints.push("/api/chat", "/.netlify/functions/chat");
+    return endpoints;
+  }
+
+  if (isLocalHost) {
+    endpoints.push("/.netlify/functions/chat", "/api/chat");
+    return endpoints;
+  }
+
+  endpoints.push("/.netlify/functions/chat", "/api/chat");
+  return endpoints;
 }
 
 
@@ -72,6 +86,34 @@ async function parseApiResponse(response) {
       `Expected JSON but received ${contentType || "unknown content"}` +
       (preview ? `: ${preview}` : ".")
   );
+}
+
+async function requestChat(payload) {
+  const endpoints = getChatEndpoints();
+  const errors = [];
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      const parsed = await parseApiResponse(response);
+
+      if (!response.ok) {
+        throw new Error(parsed.error || `Request failed at ${endpoint}`);
+      }
+
+      return parsed;
+    } catch (error) {
+      errors.push(`${endpoint}: ${error.message || "Request failed"}`);
+    }
+  }
+
+  throw new Error(errors.join(" | "));
 }
 
 async function extractPdfText(file) {
@@ -170,23 +212,11 @@ askButton.addEventListener("click", async () => {
       throw new Error("The file did not contain readable text");
     }
 
-    const endpoint = getChatEndpoint();
-    setStatus(`Sending document context to ${endpoint}...`, "busy");
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        documentText,
-        question,
-      }),
+    setStatus("Sending document context to the chat API...", "busy");
+    const payload = await requestChat({
+      documentText,
+      question,
     });
-
-    const payload = await parseApiResponse(response);
-    if (!response.ok) {
-      throw new Error(payload.error || "Request failed");
-    }
 
     setAnswerState(payload.answer, "ready");
     setStatus("Answer generated.", "success");
