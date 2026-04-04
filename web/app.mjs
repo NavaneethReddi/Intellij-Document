@@ -9,11 +9,13 @@ const statusBadge = document.querySelector("#status-badge");
 const fileChip = document.querySelector("#file-chip");
 const dropzone = document.querySelector("#dropzone");
 
+
 function getChatEndpoint() {
   const { hostname, port } = window.location;
   const isLocalPythonServer = hostname === "127.0.0.1" && port === "8000";
   return isLocalPythonServer ? "/api/chat" : "/.netlify/functions/chat";
 }
+
 
 function setStatus(message, tone = "idle") {
   statusEl.textContent = message;
