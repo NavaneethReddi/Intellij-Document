@@ -9,16 +9,13 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
+from dotenv import load_dotenv
 
 
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+load_dotenv()
 
 
-OPENROUTER_API_KEY = require_env("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_EMBEDDING_MODEL = os.getenv(
@@ -40,6 +37,17 @@ def extract_text(uploaded_file) -> str:
 
 
 st.header("My First Chatbot")
+
+if not OPENROUTER_API_KEY:
+    st.error(
+        "Missing OPENROUTER_API_KEY. Add it to a local .env file or export it in your shell."
+    )
+    st.code(
+        "OPENROUTER_API_KEY=your_key_here\n"
+        "OPENROUTER_CHAT_MODEL=openai/gpt-4o-mini\n"
+        "OPENROUTER_EMBEDDING_MODEL=openai/text-embedding-3-small"
+    )
+    st.stop()
 
 with st.sidebar:
     st.title("Your Documents")
