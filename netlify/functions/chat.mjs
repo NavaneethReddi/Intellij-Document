@@ -1,22 +1,4 @@
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const CHAT_MODEL = process.env.OPENROUTER_CHAT_MODEL || "openai/gpt-4o-mini";
-const EMBEDDING_MODEL =
-  process.env.OPENROUTER_EMBEDDING_MODEL || "openai/text-embedding-3-small";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Content-Type": "application/json",
-};
-
-function json(statusCode, body) {
-  return {
-    statusCode,
-    headers: corsHeaders,
-    body: JSON.stringify(body),
-  };
-}
 
 function chunkText(text, chunkSize = 1200, overlap = 200) {
   const normalized = text.replace(/\r\n/g, "\n").trim();
@@ -75,18 +57,18 @@ async function openRouterRequest(path, payload, apiKey) {
   return response.json();
 }
 
-async function createEmbeddings(inputs, apiKey) {
+async function createEmbeddings(inputs, apiKey, embeddingModel) {
   const payload = {
-    model: EMBEDDING_MODEL,
+    model: embeddingModel,
     input: inputs,
   };
   const response = await openRouterRequest("/embeddings", payload, apiKey);
   return response.data.map((item) => item.embedding);
 }
 
-async function createAnswer(question, context, apiKey) {
+async function createAnswer(question, context, apiKey, chatModel) {
   const payload = {
-    model: CHAT_MODEL,
+    model: chatModel,
     temperature: 0.3,
     max_tokens: 1000,
     messages: [
@@ -106,33 +88,43 @@ async function createAnswer(question, context, apiKey) {
   return response.choices?.[0]?.message?.content || "No answer returned.";
 }
 
-export default async (request) => {
-  if (request.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers: corsHeaders };
+export default async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+      },
+    });
   }
 
-  if (request.httpMethod !== "POST") {
-    return json(405, { error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = Netlify.env.get("OPENROUTER_API_KEY");
   if (!apiKey) {
-    return json(500, { error: "Missing OPENROUTER_API_KEY" });
+    return Response.json({ error: "Missing OPENROUTER_API_KEY" }, { status: 500 });
   }
+
+  const chatModel = Netlify.env.get("OPENROUTER_CHAT_MODEL") || "openai/gpt-4o-mini";
+  const embeddingModel = Netlify.env.get("OPENROUTER_EMBEDDING_MODEL") || "openai/text-embedding-3-small";
 
   try {
-    const { documentText, question } = JSON.parse(request.body || "{}");
+    const { documentText, question } = await req.json();
 
     if (!documentText || !question) {
-      return json(400, { error: "documentText and question are required" });
+      return Response.json({ error: "documentText and question are required" }, { status: 400 });
     }
 
     const chunks = chunkText(documentText).slice(0, 40);
     if (!chunks.length) {
-      return json(400, { error: "The uploaded file did not contain readable text" });
+      return Response.json({ error: "The uploaded file did not contain readable text" }, { status: 400 });
     }
 
-    const embeddings = await createEmbeddings([...chunks, question], apiKey);
+    const embeddings = await createEmbeddings([...chunks, question], apiKey, embeddingModel);
     const questionEmbedding = embeddings[embeddings.length - 1];
     const ranked = chunks
       .map((chunk, index) => ({
@@ -146,9 +138,9 @@ export default async (request) => {
       .map((item, index) => `Excerpt ${index + 1}:\n${item.chunk}`)
       .join("\n\n");
 
-    const answer = await createAnswer(question, context, apiKey);
-    return json(200, { answer });
+    const answer = await createAnswer(question, context, apiKey, chatModel);
+    return Response.json({ answer });
   } catch (error) {
-    return json(500, { error: error.message || "Unexpected server error" });
+    return Response.json({ error: error.message || "Unexpected server error" }, { status: 500 });
   }
 };
