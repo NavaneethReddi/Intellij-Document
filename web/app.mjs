@@ -9,6 +9,12 @@ const statusBadge = document.querySelector("#status-badge");
 const fileChip = document.querySelector("#file-chip");
 const dropzone = document.querySelector("#dropzone");
 
+function getChatEndpoint() {
+  const { hostname, port } = window.location;
+  const isLocalPythonServer = hostname === "127.0.0.1" && port === "8000";
+  return isLocalPythonServer ? "/api/chat" : "/.netlify/functions/chat";
+}
+
 function setStatus(message, tone = "idle") {
   statusEl.textContent = message;
   statusEl.classList.remove("is-error", "is-success");
@@ -48,6 +54,22 @@ function updateFileChip(file) {
 function syncFileSelection(files) {
   const [file] = files || [];
   updateFileChip(file);
+}
+
+async function parseApiResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+
+  const text = await response.text();
+  const preview = text.trim().slice(0, 120);
+  throw new Error(
+    `Chat API returned ${response.status} ${response.statusText || ""}. ` +
+      `Expected JSON but received ${contentType || "unknown content"}` +
+      (preview ? `: ${preview}` : ".")
+  );
 }
 
 async function extractPdfText(file) {
@@ -146,8 +168,9 @@ askButton.addEventListener("click", async () => {
       throw new Error("The file did not contain readable text");
     }
 
-    setStatus("Sending document context to the local chat API...", "busy");
-    const response = await fetch("/api/chat", {
+    const endpoint = getChatEndpoint();
+    setStatus(`Sending document context to ${endpoint}...`, "busy");
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -158,7 +181,7 @@ askButton.addEventListener("click", async () => {
       }),
     });
 
-    const payload = await response.json();
+    const payload = await parseApiResponse(response);
     if (!response.ok) {
       throw new Error(payload.error || "Request failed");
     }

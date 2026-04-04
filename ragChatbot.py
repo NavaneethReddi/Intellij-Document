@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = "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"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_EMBEDDING_MODEL = os.getenv(
