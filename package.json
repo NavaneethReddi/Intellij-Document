@@ -1,0 +1,271 @@
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+function chunkText(text, chunkSize = 1200, overlap = 200) {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const chunks = [];
+  let start = 0;
+  while (start < normalized.length) {
+    const end = Math.min(start + chunkSize, normalized.length);
+    chunks.push(normalized.slice(start, end));
+    if (end >= normalized.length) {
+      break;
+    }
+    start = Math.max(end - overlap, start + 1);
+  }
+  return chunks;
+}
+
+function dot(a, b) {
+  let total = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    total += a[index] * b[index];
+  }
+  return total;
+}
+
+function magnitude(vector) {
+  return Math.sqrt(dot(vector, vector));
+}
+
+function cosineSimilarity(a, b) {
+  const denom = magnitude(a) * magnitude(b);
+  if (!denom) {
+    return 0;
+  }
+  return dot(a, b) / denom;
+}
+
+async function openRouterRequest(path, payload, apiKey) {
+  const response = await fetch(`${OPENROUTER_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`OpenRouter request failed (${response.status}): ${details}`);
+  }
+
+  return response.json();
+}
+
+async function createEmbeddings(inputs, apiKey, embeddingModel) {
+  const payload = {
+    model: embeddingModel,
+    input: inputs,
+  };
+  const response = await openRouterRequest("/embeddings", payload, apiKey);
+  return response.data.map((item) => item.embedding);
+}
+
+async function createAnswer(question, context, apiKey, chatModel) {
+  const payload = {
+    model: chatModel,
+    temperature: 0.3,
+    max_tokens: 1000,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You answer questions about an uploaded document. Use only the provided context. " +
+          "Be complete and direct. If the answer is not in the context, say that clearly.",
+      },
+      {
+        role: "user",
+        content: `Context:\n${context}\n\nQuestion:\n${question}`,
+      },
+    ],
+  };
+  const response = await openRouterRequest("/chat/completions", payload, apiKey);
+  return response.choices?.[0]?.message?.content || "No answer returned.";
+}
+
+function buildInterviewHistory(history = []) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return "No prior interview turns.";
+  }
+
+  return history
+    .map(
+      (turn, index) =>
+        `Turn ${index + 1}\nQuestion: ${turn.question || ""}\nAnswer: ${turn.answer || ""}\n` +
+        `Feedback: ${turn.feedback || ""}\nScore: ${turn.score ?? "n/a"}`
+    )
+    .join("\n\n");
+}
+
+async function createStructuredJson(messages, apiKey, chatModel) {
+  const payload = {
+    model: chatModel,
+    temperature: 0.6,
+    max_tokens: 1400,
+    response_format: { type: "json_object" },
+    messages,
+  };
+  const response = await openRouterRequest("/chat/completions", payload, apiKey);
+  const content = response.choices?.[0]?.message?.content;
+
+  if (!content) {
+    throw new Error("No structured response returned.");
+  }
+
+  return JSON.parse(content);
+}
+
+async function initializeInterview(documentText, apiKey, chatModel) {
+  return createStructuredJson(
+    [
+      {
+        role: "system",
+        content:
+          "You are an experienced technical interviewer. The user uploaded a resume. " +
+          "Create a short voice interview opening based only on that resume. " +
+          "Return JSON with keys: intro, firstQuestion, focusAreas, candidateSnapshot. " +
+          "focusAreas must be an array of 3 short strings. candidateSnapshot must be a concise paragraph. " +
+          "The firstQuestion should be spoken naturally and be specific to the resume.",
+      },
+      {
+        role: "user",
+        content: `Resume text:\n${documentText}`,
+      },
+    ],
+    apiKey,
+    chatModel
+  );
+}
+
+async function continueInterview(documentText, history, latestAnswer, apiKey, chatModel) {
+  return createStructuredJson(
+    [
+      {
+        role: "system",
+        content:
+          "You are conducting a resume-based voice interview. " +
+          "Use only the provided resume and prior interview turns. " +
+          "Return JSON with keys: feedback, score, nextQuestion, shouldEnd, summary. " +
+          "score must be an integer from 1 to 10. " +
+          "feedback must be 2 or 3 sentences on the latest answer. " +
+          "nextQuestion must be a natural follow-up grounded in the resume unless shouldEnd is true. " +
+          "shouldEnd should be true after around 4 to 5 turns or if the interview feels complete. " +
+          "summary should be one concise sentence about the candidate's current interview performance.",
+      },
+      {
+        role: "user",
+        content:
+          `Resume text:\n${documentText}\n\n` +
+          `Interview history:\n${buildInterviewHistory(history)}\n\n` +
+          `Latest answer:\n${latestAnswer}`,
+      },
+    ],
+    apiKey,
+    chatModel
+  );
+}
+
+async function handleQuestionAnswer(documentText, question, apiKey, chatModel, embeddingModel) {
+  const chunks = chunkText(documentText).slice(0, 40);
+  if (!chunks.length) {
+    return { error: "The uploaded file did not contain readable text", status: 400 };
+  }
+
+  const embeddings = await createEmbeddings([...chunks, question], apiKey, embeddingModel);
+  const questionEmbedding = embeddings[embeddings.length - 1];
+  const ranked = chunks
+    .map((chunk, index) => ({
+      chunk,
+      score: cosineSimilarity(embeddings[index], questionEmbedding),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4);
+
+  const context = ranked
+    .map((item, index) => `Excerpt ${index + 1}:\n${item.chunk}`)
+    .join("\n\n");
+
+  const answer = await createAnswer(question, context, apiKey, chatModel);
+  return { answer };
+}
+
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
+  }
+
+  const chatModel = process.env.OPENROUTER_CHAT_MODEL || "openai/gpt-4o-mini";
+  const embeddingModel = process.env.OPENROUTER_EMBEDDING_MODEL || "openai/text-embedding-3-small";
+
+  try {
+    const {
+      action = "qa",
+      documentText,
+      question,
+      answer,
+      history = [],
+    } = req.body;
+
+    if (!documentText?.trim()) {
+      return res.status(400).json({ error: "documentText is required" });
+    }
+
+    if (action === "qa") {
+      if (!question?.trim()) {
+        return res.status(400).json({ error: "question is required" });
+      }
+      const result = await handleQuestionAnswer(documentText, question, apiKey, chatModel, embeddingModel);
+      if (result.error) {
+        return res.status(result.status).json({ error: result.error });
+      }
+      return res.status(200).json(result);
+    }
+
+    if (action === "interview_init") {
+      const payload = await initializeInterview(documentText, apiKey, chatModel);
+      return res.status(200).json({
+        intro: payload.intro || "Let us begin with your background.",
+        question: payload.firstQuestion || "Tell me about yourself and how this resume reflects your strengths.",
+        focusAreas: Array.isArray(payload.focusAreas) ? payload.focusAreas.slice(0, 3) : [],
+        candidateSnapshot: payload.candidateSnapshot || "",
+      });
+    }
+
+    if (action === "interview_turn") {
+      if (!answer?.trim()) {
+        return res.status(400).json({ error: "answer is required" });
+      }
+
+      const payload = await continueInterview(documentText, history, answer, apiKey, chatModel);
+      return res.status(200).json({
+        feedback: payload.feedback || "Your answer was clear but could use more specifics.",
+        score: Number.isFinite(payload.score) ? payload.score : 7,
+        question: payload.nextQuestion || "",
+        shouldEnd: Boolean(payload.shouldEnd),
+        summary: payload.summary || "",
+      });
+    }
+
+    return res.status(400).json({ error: "Unsupported action" });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Unexpected server error" });
+  }
+}
